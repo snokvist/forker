@@ -13,14 +13,15 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 - `local/aggregator` (tx): `wfb_tx -K <key> -k <fec_k> -n <fec_n> -u <udp_port> [-C control] [-R rcv_buf] [-s snd_buf] [-l log] -F <fec_delay> -T <fec_timeout> -B <bandwidth> -G <guard_interval> -f <data|rts> -M <mcs> -S <stbc> -L <ldpc> [-i linkid] [-p radio_port] <iface>`
 - `distributor` (tx): `wfb_tx -d` plus TX opts, followed by `host:port1,port2,...` (output)
 - `injector` (tx): `wfb_tx -I <port> [-R rcv_buf] [-l log] <iface>`
-- `tunnel`: `wfb_tun -t <ifname> -a <cidr> -l <input_port> -u <output_port> -c <master_node>`
+- `tunnel`: `wfb_tun -t <ifname> -a <cidr> -l <input_port> -u <output_port> -c <peer_address>`
 - SSE wrapper (per-instance `sse=yes`): `sse_tail -p <sse_port> -h <sse_host> -n <sse_name> -- <wfb_* ...>`
 
 ## Config notes
-- `type=distributor` always runs TX with `-d`; supply a comma list in `output=` (e.g. `host:port1,port2,...`). Interfaces and `radio_port` are ignored in this mode.
+- `type=distributor` always runs TX with `-d`; supply a comma list in `output=` (e.g. `host:port1,port2,...`). Interfaces are not used; `radio_port` is respected.
 - `type=injector` is the `wfb_tx -I` mode; set `inject_port=` and an interface via `wfb_tx` (or first `wfb_nics`). Other TX-specific flags (FEC, modem, control_port, radio_port) are omitted to match the injector CLI.
 - `guard_interval` in `[general]` accepts `short|long` (default `long`) and maps to `-G` on TX.
 - `distributor` and `injector` are mutually exclusive; `inject_port` is required for injectors.
+- `tunnel` instances now require `peer_address` (used for `wfb_tun -c`); `master_node` is no longer implied.
 
 ## Parameters not yet implemented
 Tracking the flags we still need to plumb from config → command lines:

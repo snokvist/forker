@@ -20,7 +20,6 @@
 typedef struct {
     char wfb_nics[MAX_VALUE_LEN];    // comma-separated
     char wfb_tx[MAX_VALUE_LEN];
-    char master_node[MAX_VALUE_LEN];
     int  fec_n;
     int  fec_k;
     int  mcs;
@@ -70,6 +69,7 @@ typedef struct {
     char ifaddr[MAX_VALUE_LEN];
     int  input_port;
     int  output_port;
+    char peer_address[MAX_VALUE_LEN];
     char tx_name[MAX_VALUE_LEN];
     char rx_name[MAX_VALUE_LEN];
 
@@ -221,8 +221,6 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.wfb_nics, val, sizeof(g_cfg.wfb_nics)-1);
     } else if (ieq(key, "wfb_tx")) {
         strncpy(g_cfg.wfb_tx, val, sizeof(g_cfg.wfb_tx)-1);
-    } else if (ieq(key, "master_node")) {
-        strncpy(g_cfg.master_node, val, sizeof(g_cfg.master_node)-1);
     } else if (ieq(key, "fec_n")) {
         if (parse_int(val, &g_cfg.fec_n)) die("config:%d: invalid fec_n", line_no);
     } else if (ieq(key, "fec_k")) {
@@ -317,6 +315,8 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         if (parse_int(val, &inst->input_port)) die("config:%d: invalid input_port", line_no);
     } else if (ieq(key, "output_port")) {
         if (parse_int(val, &inst->output_port)) die("config:%d: invalid output_port", line_no);
+    } else if (ieq(key, "peer_address")) {
+        strncpy(inst->peer_address, val, sizeof(inst->peer_address)-1);
     } else if (ieq(key, "tx_name")) {
         strncpy(inst->tx_name, val, sizeof(inst->tx_name)-1);
     } else if (ieq(key, "rx_name")) {
@@ -811,7 +811,7 @@ static void build_wfb_command(const instance_t *inst,
         // radio_port
         {
             int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
-            if (!injector_mode && !distributor_mode && rp > 0) {
+            if (!injector_mode && rp > 0) {
                 NEXT_SLOT();
                 snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
                 add_arg(argv, argc, "-p");
@@ -872,10 +872,11 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
-        // Peer addr: use master_node if set, else 127.0.0.1
-        if (g_cfg.master_node[0]) {
+        if (inst->peer_address[0]) {
             add_arg(argv, argc, "-c");
-            add_arg(argv, argc, g_cfg.master_node);
+            add_arg(argv, argc, inst->peer_address);
+        } else {
+            die("instance '%s': tunnel requires peer_address for -c", inst->name);
         }
         break;
 
