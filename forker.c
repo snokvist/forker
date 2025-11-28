@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -25,6 +26,10 @@ typedef struct {
     int  mcs;
     int  tx_rcv_buf_size;
     int  rx_snd_buf_size;
+    int  tx_snd_buf_size;
+    int  fec_delay;
+    int  fec_timeout;
+    char frame_type[MAX_VALUE_LEN]; // data or rts
     int  log_interval;
     int  wifi_channel;
     int  stbc;
@@ -32,6 +37,7 @@ typedef struct {
     int  bandwidth;
     char wifi_region[MAX_VALUE_LEN];
     int  wifi_txpower;
+    char guard_interval[MAX_VALUE_LEN]; // "short" or "long"
     char key_file[MAX_VALUE_LEN];
 
     int  radio_port;                 // default radio_port for -p
@@ -73,6 +79,10 @@ typedef struct {
     int  sse_enable;
     int  sse_port;                  // 0 = auto
     char sse_name[MAX_VALUE_LEN];
+
+    // TX modes
+    int  distributor;               // wfb_tx -d
+    int  inject_port;               // wfb_tx -I <port>
 
     // derived
     inst_kind_t kind;
@@ -172,10 +182,15 @@ static void init_general_defaults(void) {
     g_cfg.mcs = 2;
     g_cfg.tx_rcv_buf_size = 2097152;
     g_cfg.rx_snd_buf_size = 2097152;
+    g_cfg.tx_snd_buf_size = 0;
+    g_cfg.fec_delay = 0;
+    g_cfg.fec_timeout = 0;
+    strcpy(g_cfg.frame_type, "data");
     g_cfg.log_interval = 1000;
     g_cfg.bandwidth = 20;
     strcpy(g_cfg.wifi_region, "US");
     g_cfg.wifi_txpower = 1500;
+    strcpy(g_cfg.guard_interval, "long");
     strcpy(g_cfg.key_file, "/etc/gs.key");
 
     g_cfg.radio_port = 0;              // default: no -p, let WFB default
@@ -202,6 +217,17 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         if (parse_int(val, &g_cfg.tx_rcv_buf_size)) die("config:%d: invalid tx_rcv_buf_size", line_no);
     } else if (ieq(key, "rx_snd_buf_size")) {
         if (parse_int(val, &g_cfg.rx_snd_buf_size)) die("config:%d: invalid rx_snd_buf_size", line_no);
+    } else if (ieq(key, "tx_snd_buf_size")) {
+        if (parse_int(val, &g_cfg.tx_snd_buf_size)) die("config:%d: invalid tx_snd_buf_size", line_no);
+    } else if (ieq(key, "fec_delay")) {
+        if (parse_int(val, &g_cfg.fec_delay)) die("config:%d: invalid fec_delay", line_no);
+    } else if (ieq(key, "fec_timeout")) {
+        if (parse_int(val, &g_cfg.fec_timeout)) die("config:%d: invalid fec_timeout", line_no);
+    } else if (ieq(key, "frame_type")) {
+        if (!(ieq(val, "data") || ieq(val, "rts"))) {
+            die("config:%d: frame_type must be 'data' or 'rts'", line_no);
+        }
+        strncpy(g_cfg.frame_type, val, sizeof(g_cfg.frame_type)-1);
     } else if (ieq(key, "log_interval")) {
         if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
     } else if (ieq(key, "wifi_channel")) {
@@ -216,6 +242,11 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.wifi_region, val, sizeof(g_cfg.wifi_region)-1);
     } else if (ieq(key, "wifi_txpower")) {
         if (parse_int(val, &g_cfg.wifi_txpower)) die("config:%d: invalid wifi_txpower", line_no);
+    } else if (ieq(key, "guard_interval")) {
+        if (!(ieq(val, "short") || ieq(val, "long"))) {
+            die("config:%d: guard_interval must be 'short' or 'long'", line_no);
+        }
+        strncpy(g_cfg.guard_interval, val, sizeof(g_cfg.guard_interval)-1);
     } else if (ieq(key, "key_file")) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (ieq(key, "radio_port")) {
@@ -243,7 +274,9 @@ static instance_t *add_instance(const char *name, int line_no) {
     inst->sse_port = 0;
     inst->sse_enable = 0;
     inst->kind = INST_KIND_UNKNOWN;
-    inst->radio_port = 0;
+    inst->radio_port = -1; // inherit general default unless explicitly set
+    inst->distributor = 0;
+    inst->inject_port = 0;
     return inst;
 }
 
@@ -280,6 +313,10 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         if (parse_int(val, &inst->sse_port)) die("config:%d: invalid sse_port", line_no);
     } else if (ieq(key, "sse_name")) {
         strncpy(inst->sse_name, val, sizeof(inst->sse_name)-1);
+    } else if (ieq(key, "distributor")) {
+        if (parse_bool(val, &inst->distributor)) die("config:%d: invalid distributor value '%s'", line_no, val);
+    } else if (ieq(key, "inject_port")) {
+        if (parse_int(val, &inst->inject_port)) die("config:%d: invalid inject_port", line_no);
     } else {
         die("config:%d: unknown key '%s' in instance '%s'", line_no, key, inst->name);
     }
@@ -301,11 +338,25 @@ static inst_kind_t deduce_kind(const instance_t *inst) {
         if (ieq(inst->direction, "tx")) return INST_KIND_TX_LOCAL;
         else return INST_KIND_RX_AGGREGATOR; // treat as local RX if needed
     }
+    if (ieq(inst->type, "distributor")) {
+        return INST_KIND_TX_LOCAL;
+    }
+    if (ieq(inst->type, "injector")) {
+        return INST_KIND_TX_LOCAL;
+    }
     return INST_KIND_UNKNOWN;
 }
 
 static void derive_missing_direction(instance_t *inst) {
     if (inst->direction[0]) return;
+    if (ieq(inst->type, "distributor")) {
+        strcpy(inst->direction, "tx");
+        return;
+    }
+    if (ieq(inst->type, "injector")) {
+        strcpy(inst->direction, "tx");
+        return;
+    }
     size_t len = strlen(inst->name);
     if (len > 3 && strcmp(inst->name + len - 3, "-rx") == 0) {
         strcpy(inst->direction, "rx");
@@ -383,22 +434,38 @@ static void load_config(const char *path) {
 
     // Derive kind for each instance
     for (int i = 0; i < g_instance_count; i++) {
-        derive_missing_direction(&g_instances[i]);
-        g_instances[i].kind = deduce_kind(&g_instances[i]);
-        if (g_instances[i].kind == INST_KIND_UNKNOWN) {
+        instance_t *inst = &g_instances[i];
+        derive_missing_direction(inst);
+        inst->kind = deduce_kind(inst);
+        if (inst->kind == INST_KIND_UNKNOWN) {
             die("instance '%s': unknown/unsupported type='%s' direction='%s'",
-                g_instances[i].name, g_instances[i].type, g_instances[i].direction);
+                inst->name, inst->type, inst->direction);
         }
-        if (g_instances[i].sse_enable && !g_cfg.sse_tail[0]) {
+        if (ieq(inst->type, "distributor")) {
+            inst->distributor = 1;
+            if (!ieq(inst->direction, "tx")) {
+                die("instance '%s': distributor must use direction=tx", inst->name);
+            }
+        }
+        if (ieq(inst->type, "injector") && inst->inject_port <= 0) {
+            die("instance '%s': injector requires inject_port", inst->name);
+        }
+        if (inst->inject_port > 0 && inst->distributor) {
+            die("instance '%s': injector mode (-I) cannot be combined with distributor (-d)", inst->name);
+        }
+        if (inst->inject_port > 0 && inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': injector mode (-I) requires a TX kind", inst->name);
+        }
+        if (inst->sse_enable && !g_cfg.sse_tail[0]) {
             die("instance '%s': sse enabled but sse_tail not set in [general]",
-                g_instances[i].name);
+                inst->name);
         }
-        if (g_instances[i].sse_enable && g_instances[i].sse_port == 0) {
-            g_instances[i].sse_port = g_cfg.sse_base_port++;
+        if (inst->sse_enable && inst->sse_port == 0) {
+            inst->sse_port = g_cfg.sse_base_port++;
         }
-        if (g_instances[i].sse_enable && !g_instances[i].sse_name[0]) {
-            strncpy(g_instances[i].sse_name, g_instances[i].name,
-                    sizeof(g_instances[i].sse_name)-1);
+        if (inst->sse_enable && !inst->sse_name[0]) {
+            strncpy(inst->sse_name, inst->name,
+                    sizeof(inst->sse_name)-1);
         }
     }
 }
@@ -425,7 +492,7 @@ static void build_wfb_command(const instance_t *inst,
     char host[128];
     int port = 0;
 
-    static char arg_storage[MAX_ARGS][32];
+    static char arg_storage[MAX_ARGS][MAX_VALUE_LEN];
     int storage_idx = 0;
 
     #define NEXT_SLOT() do { \
@@ -496,7 +563,7 @@ static void build_wfb_command(const instance_t *inst,
 
         // radio_port
         {
-            int rp = inst->radio_port ? inst->radio_port : g_cfg.radio_port;
+            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
             if (rp > 0) {
                 NEXT_SLOT();
                 snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
@@ -515,7 +582,13 @@ static void build_wfb_command(const instance_t *inst,
             if (!tok) die("general: wfb_nics is empty");
             while (tok) {
                 tok = trim(tok);
-                if (*tok) add_arg(argv, argc, tok);
+                if (*tok) {
+                    NEXT_SLOT();
+                    strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
+                    arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
+                    add_arg(argv, argc, arg_storage[storage_idx]);
+                    storage_idx++;
+                }
                 tok = strtok(NULL, ",");
             }
         }
@@ -544,7 +617,7 @@ static void build_wfb_command(const instance_t *inst,
 
         // radio_port
         {
-            int rp = inst->radio_port ? inst->radio_port : g_cfg.radio_port;
+            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
             if (rp > 0) {
                 NEXT_SLOT();
                 snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
@@ -563,7 +636,13 @@ static void build_wfb_command(const instance_t *inst,
             if (!tok) die("general: wfb_nics is empty");
             while (tok) {
                 tok = trim(tok);
-                if (*tok) add_arg(argv, argc, tok);
+                if (*tok) {
+                    NEXT_SLOT();
+                    strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
+                    arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
+                    add_arg(argv, argc, arg_storage[storage_idx]);
+                    storage_idx++;
+                }
                 tok = strtok(NULL, ",");
             }
         }
@@ -573,25 +652,33 @@ static void build_wfb_command(const instance_t *inst,
         snprintf(cmd_buf, cmd_len, "wfb_tx");
         add_arg(argv, argc, cmd_buf);
 
-        // -K, -k, -n
-        if (g_cfg.key_file[0]) {
-            add_arg(argv, argc, "-K");
-            add_arg(argv, argc, g_cfg.key_file);
+        int distributor_mode = inst->distributor;
+        int injector_mode = (inst->inject_port > 0);
+        if (distributor_mode) {
+            add_arg(argv, argc, "-d");
         }
-        NEXT_SLOT();
-        snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_k);
-        add_arg(argv, argc, "-k");
-        add_arg(argv, argc, arg_storage[storage_idx]);
-        storage_idx++;
 
-        NEXT_SLOT();
-        snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_n);
-        add_arg(argv, argc, "-n");
-        add_arg(argv, argc, arg_storage[storage_idx]);
-        storage_idx++;
+        // -K, -k, -n
+        if (!injector_mode) {
+            if (g_cfg.key_file[0]) {
+                add_arg(argv, argc, "-K");
+                add_arg(argv, argc, g_cfg.key_file);
+            }
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_k);
+            add_arg(argv, argc, "-k");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_n);
+            add_arg(argv, argc, "-n");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
 
         // input host:port → -u port
-        if (inst->input[0]) {
+        if (!injector_mode && inst->input[0]) {
             if (parse_host_port(inst->input, host, sizeof(host), &port) != 0) {
                 die("instance '%s': invalid input '%s'", inst->name, inst->input);
             }
@@ -601,12 +688,36 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
+        if (injector_mode) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
+                     inst->inject_port);
+            add_arg(argv, argc, "-I");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
 
-        if (inst->control_port > 0) {
+        if (!injector_mode && inst->control_port > 0) {
             NEXT_SLOT();
             snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
                      inst->control_port);
             add_arg(argv, argc, "-C");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (g_cfg.tx_rcv_buf_size > 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
+                     g_cfg.tx_rcv_buf_size);
+            add_arg(argv, argc, "-R");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (!injector_mode && g_cfg.tx_snd_buf_size > 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
+                     g_cfg.tx_snd_buf_size);
+            add_arg(argv, argc, "-s");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
@@ -618,15 +729,65 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
-        if (inst->linkid[0]) {
+        // modem parameters (TX only, skip for injector which is a separate mode)
+        if (!injector_mode && g_cfg.fec_delay > 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_delay);
+            add_arg(argv, argc, "-F");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (!injector_mode && g_cfg.bandwidth > 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.bandwidth);
+            add_arg(argv, argc, "-B");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (!injector_mode && g_cfg.guard_interval[0]) {
+            add_arg(argv, argc, "-G");
+            add_arg(argv, argc, g_cfg.guard_interval);
+        }
+        if (!injector_mode && g_cfg.frame_type[0]) {
+            add_arg(argv, argc, "-f");
+            add_arg(argv, argc, g_cfg.frame_type);
+        }
+        if (!injector_mode && g_cfg.fec_timeout > 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_timeout);
+            add_arg(argv, argc, "-T");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (!injector_mode) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.mcs);
+            add_arg(argv, argc, "-M");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.stbc);
+            add_arg(argv, argc, "-S");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.ldpc);
+            add_arg(argv, argc, "-L");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+
+        if (!injector_mode && inst->linkid[0]) {
             add_arg(argv, argc, "-i");
             add_arg(argv, argc, inst->linkid);
         }
 
         // radio_port
         {
-            int rp = inst->radio_port ? inst->radio_port : g_cfg.radio_port;
-            if (rp > 0) {
+            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
+            if (!injector_mode && !distributor_mode && rp > 0) {
                 NEXT_SLOT();
                 snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
                 add_arg(argv, argc, "-p");
@@ -635,17 +796,28 @@ static void build_wfb_command(const instance_t *inst,
             }
         }
 
-        // Interfaces: prefer wfb_tx if set, else first wfb_nics
-        if (g_cfg.wfb_tx[0]) {
-            add_arg(argv, argc, g_cfg.wfb_tx);
+        if (distributor_mode) {
+            if (!inst->output[0]) {
+                die("instance '%s': distributor requires output host list", inst->name);
+            }
+            add_arg(argv, argc, inst->output);
         } else {
-            char nics_copy[MAX_VALUE_LEN];
-            strncpy(nics_copy, g_cfg.wfb_nics, sizeof(nics_copy)-1);
-            nics_copy[sizeof(nics_copy)-1] = '\0';
-            char *tok = strtok(nics_copy, ",");
-            if (!tok) die("general: wfb_nics is empty");
-            tok = trim(tok);
-            add_arg(argv, argc, tok);
+            // Interfaces: prefer wfb_tx if set, else first wfb_nics
+            if (g_cfg.wfb_tx[0]) {
+                add_arg(argv, argc, g_cfg.wfb_tx);
+            } else {
+                char nics_copy[MAX_VALUE_LEN];
+                strncpy(nics_copy, g_cfg.wfb_nics, sizeof(nics_copy)-1);
+                nics_copy[sizeof(nics_copy)-1] = '\0';
+                char *tok = strtok(nics_copy, ",");
+                if (!tok) die("general: wfb_nics is empty");
+                tok = trim(tok);
+                NEXT_SLOT();
+                strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
+                arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
+                add_arg(argv, argc, arg_storage[storage_idx]);
+                storage_idx++;
+            }
         }
         break;
 
@@ -695,7 +867,7 @@ static void build_wfb_command(const instance_t *inst,
 static void build_final_command(const instance_t *inst,
                                 char *cmd_buf, size_t cmd_len,
                                 char **argv, int *argc) {
-    static char inner_cmd_buf[64];
+    static char inner_cmd_buf[MAX_VALUE_LEN];
     static char *inner_argv[MAX_ARGS];
     int inner_argc = 0;
 
@@ -747,10 +919,20 @@ static void sigint_handler(int sig) {
     g_stop_requested = 1;
 }
 
+// Build all commands up front to catch config errors before forking children.
+static void validate_all_commands(void) {
+    for (int i = 0; i < g_instance_count; i++) {
+        char cmd_buf[MAX_VALUE_LEN];
+        char *argv[MAX_ARGS];
+        int argc = 0;
+        build_final_command(&g_instances[i], cmd_buf, sizeof(cmd_buf), argv, &argc);
+    }
+}
+
 static void start_children(void) {
     for (int i = 0; i < g_instance_count; i++) {
         instance_t *inst = &g_instances[i];
-        char cmd_buf[64];
+        char cmd_buf[MAX_VALUE_LEN];
         char *argv[MAX_ARGS];
         int argc = 0;
 
@@ -767,6 +949,14 @@ static void start_children(void) {
             die("fork failed for instance '%s': %s", inst->name, strerror(errno));
         } else if (pid == 0) {
             // child
+            if (!inst->sse_enable) {
+                int nullfd = open("/dev/null", O_RDWR);
+                if (nullfd >= 0) {
+                    dup2(nullfd, STDOUT_FILENO);
+                    dup2(nullfd, STDERR_FILENO);
+                    if (nullfd > 2) close(nullfd);
+                }
+            }
             execvp(cmd_buf, argv);
             fprintf(stderr, "forker: execvp failed for '%s': %s\n", cmd_buf, strerror(errno));
             _exit(127);
@@ -834,10 +1024,11 @@ static void shutdown_all(int failed_idx, int failed_status) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = "wfb.cleaned.conf";
+    const char *config_path = "wfb.conf";
     if (argc > 1) config_path = argv[1];
 
     load_config(config_path);
+    validate_all_commands();
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
