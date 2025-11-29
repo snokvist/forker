@@ -463,7 +463,7 @@ static void start_children(void) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = "wfb.conf";
+    const char *config_path = "forker.conf";
     if (argc > 1) config_path = argv[1];
 
     struct sigaction sa;
