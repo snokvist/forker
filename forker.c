@@ -16,6 +16,7 @@
 #define MAX_NAME_LEN  64
 #define MAX_VALUE_LEN 256
 #define MAX_ARGS      64
+#define MAX_CMDS      8
 
 typedef struct {
     char wfb_nics[MAX_VALUE_LEN];    // comma-separated
@@ -45,6 +46,12 @@ typedef struct {
     char sse_tail[MAX_VALUE_LEN];    // path to sse_tail (optional)
     char sse_host[MAX_VALUE_LEN];    // e.g. 0.0.0.0
     int  sse_base_port;             // starting port for auto-assign
+
+    // Run-once hooks
+    char init_cmds[MAX_CMDS][MAX_VALUE_LEN];
+    int  init_cmd_count;
+    char cleanup_cmds[MAX_CMDS][MAX_VALUE_LEN];
+    int  cleanup_cmd_count;
 } general_config_t;
 
 typedef enum {
@@ -223,6 +230,8 @@ static void init_general_defaults(void) {
     g_cfg.wifi_txpower = 1500;
     strcpy(g_cfg.guard_interval, "long");
     strcpy(g_cfg.key_file, "/etc/gs.key");
+    g_cfg.init_cmd_count = 0;
+    g_cfg.cleanup_cmd_count = 0;
 
     g_cfg.radio_port = 0;              // default: no -p, let WFB default
 
@@ -276,6 +285,22 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
             die("config:%d: guard_interval must be 'short' or 'long'", line_no);
         }
         strncpy(g_cfg.guard_interval, val, sizeof(g_cfg.guard_interval)-1);
+    } else if (ieq(key, "init_cmd")) {
+        if (g_cfg.init_cmd_count >= MAX_CMDS) {
+            die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
+        }
+        strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val,
+                sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
+        g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
+        g_cfg.init_cmd_count++;
+    } else if (ieq(key, "cleanup_cmd")) {
+        if (g_cfg.cleanup_cmd_count >= MAX_CMDS) {
+            die("config:%d: too many cleanup_cmd entries (max %d)", line_no, MAX_CMDS);
+        }
+        strncpy(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count], val,
+                sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1);
+        g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
+        g_cfg.cleanup_cmd_count++;
     } else if (ieq(key, "key_file")) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (ieq(key, "radio_port")) {
@@ -1237,6 +1262,53 @@ static void shutdown_all(int failed_idx, int failed_status) {
     }
 }
 
+static int expand_wfb_nics(const char *in, char *out, size_t out_len) {
+    const char *needle = "$wfb_nics";
+    size_t needle_len = strlen(needle);
+    size_t in_len = strlen(in);
+    size_t pos = 0;
+    size_t out_pos = 0;
+
+    while (pos < in_len) {
+        if (strncmp(in + pos, needle, needle_len) == 0) {
+            size_t repl_len = strlen(g_cfg.wfb_nics);
+            if (out_pos + repl_len >= out_len) return -1;
+            memcpy(out + out_pos, g_cfg.wfb_nics, repl_len);
+            out_pos += repl_len;
+            pos += needle_len;
+        } else {
+            if (out_pos + 1 >= out_len) return -1;
+            out[out_pos++] = in[pos++];
+        }
+    }
+    if (out_pos >= out_len) return -1;
+    out[out_pos] = '\0';
+    return 0;
+}
+
+static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase) {
+    for (int i = 0; i < count; i++) {
+        char expanded[MAX_VALUE_LEN];
+        if (expand_wfb_nics(cmds[i], expanded, sizeof(expanded)) != 0) {
+            die("failed to expand %s command '%s' (too long?)", phase, cmds[i]);
+        }
+        fprintf(stderr, "forker: running %s command: %s\n", phase, expanded);
+        pid_t pid = fork();
+        if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
+        if (pid == 0) {
+            execl("/bin/sh", "sh", "-c", expanded, (char *)NULL);
+            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, expanded, strerror(errno));
+            _exit(127);
+        }
+        int status;
+        if (waitpid(pid, &status, 0) < 0) die("%s command waitpid failed: %s", phase, strerror(errno));
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            die("%s command '%s' failed (status %d)", phase, expanded,
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
+    }
+}
+
 static int supervise_children(int *failed_idx_out, int *failed_status_out) {
     int running = g_instance_count;
     int shutdown_initiated = 0;
@@ -1325,6 +1397,7 @@ int main(int argc, char **argv) {
 
         if (g_stop_requested) break;
 
+        run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
         start_children();
 
         int failed_idx = -1;
@@ -1339,6 +1412,8 @@ int main(int argc, char **argv) {
 
         fprintf(stderr, "forker: reload requested, restarting children\n");
     }
+
+    run_commands(g_cfg.cleanup_cmds, g_cfg.cleanup_cmd_count, "cleanup");
 
     return exit_code;
 }

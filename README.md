@@ -30,6 +30,7 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 - `frame_type` can be set per instance (or globally) to choose `-f data|rts` for TX modes (skipped for injectors).
 - `agg_timeout_ms` is supported for tunnels (including 0) and maps to `wfb_tun -T`.
 - `fwmark` can be set per TX instance to emit `-P <mark>` (useful with shaper). `qdisc=yes` adds `-Q` on TX.
+- Run-once hooks: `init_cmd=` and `cleanup_cmd=` in `[general]` run before starting instances and after shutdown. `$wfb_nics` is expanded inside these commands. Multiple entries allowed.
 
 ## Parameters not yet implemented
 Tracking the flags we still need to plumb from config → command lines:
