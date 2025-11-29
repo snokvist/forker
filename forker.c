@@ -69,6 +69,7 @@ typedef struct {
     char ifaddr[MAX_VALUE_LEN];
     int  input_port;
     int  output_port;
+    int  agg_timeout_ms;
     char peer_address[MAX_VALUE_LEN];
     char tx_name[MAX_VALUE_LEN];
     char rx_name[MAX_VALUE_LEN];
@@ -83,9 +84,18 @@ typedef struct {
     // TX modes
     int  distributor;               // wfb_tx -d
     int  inject_port;               // wfb_tx -I <port>
+    int  fec_n_override;
+    int  fec_k_override;
+    int  mcs_override;
+    int  stbc_override;
+    int  ldpc_override;
+    int  bandwidth_override;
+    char guard_interval_override[MAX_VALUE_LEN];
 
     // derived
     inst_kind_t kind;
+
+    char frame_type[MAX_VALUE_LEN]; // optional override
 
     // runtime
     pid_t pid;
@@ -294,6 +304,14 @@ static instance_t *add_instance(const char *name, int line_no) {
     inst->radio_port = -1; // inherit general default unless explicitly set
     inst->distributor = 0;
     inst->inject_port = 0;
+    inst->agg_timeout_ms = -1;
+    inst->fec_n_override = -1;
+    inst->fec_k_override = -1;
+    inst->mcs_override = -1;
+    inst->stbc_override = -1;
+    inst->ldpc_override = -1;
+    inst->bandwidth_override = -1;
+    inst->guard_interval_override[0] = '\0';
     return inst;
 }
 
@@ -318,6 +336,8 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         if (parse_int(val, &inst->input_port)) die("config:%d: invalid input_port", line_no);
     } else if (ieq(key, "output_port")) {
         if (parse_int(val, &inst->output_port)) die("config:%d: invalid output_port", line_no);
+    } else if (ieq(key, "agg_timeout_ms")) {
+        if (parse_int(val, &inst->agg_timeout_ms)) die("config:%d: invalid agg_timeout_ms", line_no);
     } else if (ieq(key, "peer_address")) {
         strncpy(inst->peer_address, val, sizeof(inst->peer_address)-1);
     } else if (ieq(key, "tx_name")) {
@@ -336,6 +356,23 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         if (parse_bool(val, &inst->distributor)) die("config:%d: invalid distributor value '%s'", line_no, val);
     } else if (ieq(key, "inject_port")) {
         if (parse_int(val, &inst->inject_port)) die("config:%d: invalid inject_port", line_no);
+    } else if (ieq(key, "frame_type")) {
+        // validated later only for TX kinds
+        strncpy(inst->frame_type, val, sizeof(inst->frame_type)-1);
+    } else if (ieq(key, "fec_n")) {
+        if (parse_int(val, &inst->fec_n_override)) die("config:%d: invalid fec_n", line_no);
+    } else if (ieq(key, "fec_k")) {
+        if (parse_int(val, &inst->fec_k_override)) die("config:%d: invalid fec_k", line_no);
+    } else if (ieq(key, "mcs")) {
+        if (parse_int(val, &inst->mcs_override)) die("config:%d: invalid mcs", line_no);
+    } else if (ieq(key, "stbc")) {
+        if (parse_int(val, &inst->stbc_override)) die("config:%d: invalid stbc", line_no);
+    } else if (ieq(key, "ldpc")) {
+        if (parse_int(val, &inst->ldpc_override)) die("config:%d: invalid ldpc", line_no);
+    } else if (ieq(key, "bandwidth")) {
+        if (parse_int(val, &inst->bandwidth_override)) die("config:%d: invalid bandwidth", line_no);
+    } else if (ieq(key, "guard_interval")) {
+        strncpy(inst->guard_interval_override, val, sizeof(inst->guard_interval_override)-1);
     } else {
         die("config:%d: unknown key '%s' in instance '%s'", line_no, key, inst->name);
     }
@@ -461,6 +498,30 @@ static void load_config(const char *path) {
         if (inst->kind == INST_KIND_UNKNOWN) {
             die("instance '%s': unknown/unsupported type='%s' direction='%s'",
                 inst->name, inst->type, inst->direction);
+        }
+        if (inst->agg_timeout_ms >= 0 && inst->kind != INST_KIND_TUNNEL) {
+            die("instance '%s': agg_timeout_ms is only valid for tunnel instances", inst->name);
+        }
+        if (inst->frame_type[0] && inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': frame_type is only valid for TX instances", inst->name);
+        }
+        if (inst->frame_type[0] && !(ieq(inst->frame_type, "data") || ieq(inst->frame_type, "rts"))) {
+            die("instance '%s': frame_type must be 'data' or 'rts'", inst->name);
+        }
+        if ((inst->fec_n_override >= 0 || inst->fec_k_override >= 0) &&
+            inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': fec_n/fec_k overrides are only valid for TX instances", inst->name);
+        }
+        if ((inst->mcs_override >= 0 || inst->stbc_override >= 0 ||
+             inst->ldpc_override >= 0 || inst->bandwidth_override >= 0 ||
+             inst->guard_interval_override[0]) &&
+            inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': modem overrides (mcs/stbc/ldpc/bandwidth/guard_interval) are only valid for TX instances",
+                inst->name);
+        }
+        if (inst->guard_interval_override[0] &&
+            !(ieq(inst->guard_interval_override, "short") || ieq(inst->guard_interval_override, "long"))) {
+            die("instance '%s': guard_interval must be 'short' or 'long'", inst->name);
         }
         if (ieq(inst->type, "distributor")) {
             inst->distributor = 1;
@@ -691,6 +752,14 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, "-d");
         }
 
+        int fec_k_val = (inst->fec_k_override >= 0) ? inst->fec_k_override : g_cfg.fec_k;
+        int fec_n_val = (inst->fec_n_override >= 0) ? inst->fec_n_override : g_cfg.fec_n;
+        int mcs_val = (inst->mcs_override >= 0) ? inst->mcs_override : g_cfg.mcs;
+        int stbc_val = (inst->stbc_override >= 0) ? inst->stbc_override : g_cfg.stbc;
+        int ldpc_val = (inst->ldpc_override >= 0) ? inst->ldpc_override : g_cfg.ldpc;
+        int bw_val = (inst->bandwidth_override >= 0) ? inst->bandwidth_override : g_cfg.bandwidth;
+        const char *guard_val = inst->guard_interval_override[0] ? inst->guard_interval_override : g_cfg.guard_interval;
+
         // -K, -k, -n
         if (!injector_mode) {
             if (g_cfg.key_file[0]) {
@@ -698,13 +767,13 @@ static void build_wfb_command(const instance_t *inst,
                 add_arg(argv, argc, g_cfg.key_file);
             }
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_k);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", fec_k_val);
             add_arg(argv, argc, "-k");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
 
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_n);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", fec_n_val);
             add_arg(argv, argc, "-n");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
@@ -770,20 +839,21 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
-        if (!injector_mode && g_cfg.bandwidth > 0) {
+        if (!injector_mode && bw_val > 0) {
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.bandwidth);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", bw_val);
             add_arg(argv, argc, "-B");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }
-        if (!injector_mode && g_cfg.guard_interval[0]) {
+        if (!injector_mode && guard_val[0]) {
             add_arg(argv, argc, "-G");
-            add_arg(argv, argc, g_cfg.guard_interval);
+            add_arg(argv, argc, guard_val);
         }
-        if (!injector_mode && g_cfg.frame_type[0]) {
+        const char *frame = inst->frame_type[0] ? inst->frame_type : g_cfg.frame_type;
+        if (!injector_mode && frame[0]) {
             add_arg(argv, argc, "-f");
-            add_arg(argv, argc, g_cfg.frame_type);
+            add_arg(argv, argc, frame);
         }
         if (!injector_mode && g_cfg.fec_timeout > 0) {
             NEXT_SLOT();
@@ -794,19 +864,19 @@ static void build_wfb_command(const instance_t *inst,
         }
         if (!injector_mode) {
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.mcs);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", mcs_val);
             add_arg(argv, argc, "-M");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
 
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.stbc);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", stbc_val);
             add_arg(argv, argc, "-S");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
 
             NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.ldpc);
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", ldpc_val);
             add_arg(argv, argc, "-L");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
@@ -878,6 +948,14 @@ static void build_wfb_command(const instance_t *inst,
             snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
                      "%d", inst->output_port);
             add_arg(argv, argc, "-u");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (inst->agg_timeout_ms >= 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
+                     "%d", inst->agg_timeout_ms);
+            add_arg(argv, argc, "-T");
             add_arg(argv, argc, arg_storage[storage_idx]);
             storage_idx++;
         }

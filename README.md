@@ -27,6 +27,8 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 - `guard_interval` in `[general]` accepts `short|long` (default `long`) and maps to `-G` on TX.
 - `distributor` and `injector` are mutually exclusive; `inject_port` is required for injectors.
 - `tunnel` instances now require `peer_address` (used for `wfb_tun -c`); `master_node` is no longer implied.
+- `frame_type` can be set per instance (or globally) to choose `-f data|rts` for TX modes (skipped for injectors).
+- `agg_timeout_ms` is supported for tunnels (including 0) and maps to `wfb_tun -T`.
 
 ## Parameters not yet implemented
 Tracking the flags we still need to plumb from config → command lines:
