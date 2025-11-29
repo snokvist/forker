@@ -29,27 +29,27 @@ clean:
 
 # Convenience: rebuild then run against the sample config.
 run: $(BIN)
-	./$(BIN) wfb.conf
+	./$(BIN) configs/forker.conf
 
 # Cross-compilation helper for linux-arm targets.
 arm: CC := $(ARM_CC)
 arm: all
 
 install: $(BIN) $(SERVICE_SRC) $(MONITOR_SCRIPT) $(SHAPER_SCRIPT) $(CONFIG_SRC) $(TX_CONFIG_SRC)
-        install -d $(BINDIR) $(SYSDDIR) $(dir $(FORKER_CONF)) $(FORKER_WORKDIR)
-        install -m 0755 $(BIN) $(BINDIR)/
-        install -m 0755 $(MONITOR_SCRIPT) $(BINDIR)/monitor.sh
-        install -m 0755 $(SHAPER_SCRIPT) $(BINDIR)/shaper.sh
-        install -m 0644 $(CONFIG_SRC) $(FORKER_CONF)
-        install -m 0644 $(TX_CONFIG_SRC) $(FORKER_WORKDIR)/tx-forker.conf
-        sed -e 's|@FORKER_BIN@|$(BINDIR)/$(BIN)|g' \
-            -e 's|@FORKER_CONF@|$(FORKER_CONF)|g' \
-            -e 's|@VRX_DIR@|$(FORKER_WORKDIR)|g' \
-            $(SERVICE_SRC) > $(SERVICE_PATH)
-        systemctl daemon-reload
+	install -d $(BINDIR) $(SYSDDIR) $(dir $(FORKER_CONF)) $(FORKER_WORKDIR)
+	install -m 0755 $(BIN) $(BINDIR)/
+	install -m 0755 $(MONITOR_SCRIPT) $(BINDIR)/monitor.sh
+	install -m 0755 $(SHAPER_SCRIPT) $(BINDIR)/shaper.sh
+	install -m 0644 $(CONFIG_SRC) $(FORKER_CONF)
+	install -m 0644 $(TX_CONFIG_SRC) $(FORKER_WORKDIR)/tx-forker.conf
+	sed -e 's|@FORKER_BIN@|$(BINDIR)/$(BIN)|g' \
+	    -e 's|@FORKER_CONF@|$(FORKER_CONF)|g' \
+	    -e 's|@VRX_DIR@|$(FORKER_WORKDIR)|g' \
+	$(SERVICE_SRC) > $(SERVICE_PATH)
+	systemctl daemon-reload
 
 uninstall:
-        rm -f $(BINDIR)/$(BIN) $(BINDIR)/monitor.sh $(BINDIR)/shaper.sh
-        rm -f $(FORKER_CONF) $(FORKER_WORKDIR)/tx-forker.conf
-        rm -f $(SERVICE_PATH)
-        systemctl daemon-reload
+	rm -f $(BINDIR)/$(BIN) $(BINDIR)/monitor.sh $(BINDIR)/shaper.sh
+	rm -f $(FORKER_CONF) $(FORKER_WORKDIR)/tx-forker.conf
+	rm -f $(SERVICE_PATH)
+	systemctl daemon-reload
