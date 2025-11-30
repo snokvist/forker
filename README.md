@@ -19,4 +19,4 @@ There is no derived flag handling—encode everything you need directly in `cmd=
 
 ## Samples
 - `config/wfb.conf` shows a multi-instance setup with init/cleanup hooks and mixed SSE/non-SSE instances.
-- `configs/tx-wfb.conf` is a minimal TX-focused sample.
+- `config/tx-wfb.conf` is a minimal TX-focused sample for local testing (not installed by `make install`).
