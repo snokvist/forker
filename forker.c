@@ -162,6 +162,10 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (strcasecmp(key, "log_interval") == 0) {
         if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
+    } else if (strcasecmp(key, "region") == 0 || strcasecmp(key, "channel") == 0 ||
+               strcasecmp(key, "bandwidth") == 0 || strcasecmp(key, "txpower") == 0 ||
+               strcasecmp(key, "wfb_bw_mhz") == 0) {
+        /* Optional radio/shaping hints used by helper scripts; accepted for compatibility. */
     } else {
         die("config:%d: unknown general key '%s'", line_no, key);
     }
