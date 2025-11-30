@@ -11,16 +11,18 @@
 CONFIG_FILE="/etc/wfb.conf"
 
 CHANNEL_DEFAULT="161"
-BANDWIDTH_DEFAULT="HT20"
+BANDWIDTH_MHZ_DEFAULT="20"
 TXPOWER_DEFAULT="500"
 REGION_DEFAULT="US"
 
 # Load simple VAR=VALUE overrides from /etc/wfb.conf when present
 
 ENV_CHANNEL="${CHANNEL:-}"
-ENV_BANDWIDTH="${BANDWIDTH:-}"
+ENV_BANDWIDTH_MHZ="${BANDWIDTH_MHZ:-${WFB_BW_MHZ:-${BANDWIDTH:-}}}"
 ENV_TXPOWER="${TXPOWER:-}"
 ENV_REGION="${REGION:-}"
+
+CONFIG_BANDWIDTH_MHZ=""
 
 if [ -r "$CONFIG_FILE" ]; then
     while IFS= read -r line; do
@@ -29,8 +31,11 @@ if [ -r "$CONFIG_FILE" ]; then
                 key=${line%%=*}
                 value=${line#*=}
                 case "$key" in
-                    CHANNEL|BANDWIDTH|TXPOWER|REGION)
+                    CHANNEL|TXPOWER|REGION)
                         eval "$key=\"${value}\""
+                        ;;
+                    BANDWIDTH|BANDWIDTH_MHZ|BW_MHZ|WFB_BW_MHZ|wfb_bw_mhz|bw_mhz)
+                        CONFIG_BANDWIDTH_MHZ="$value"
                         ;;
                 esac
                 ;;
@@ -39,9 +44,32 @@ if [ -r "$CONFIG_FILE" ]; then
 fi
 
 CHANNEL="${ENV_CHANNEL:-${CHANNEL:-$CHANNEL_DEFAULT}}"
-BANDWIDTH="${ENV_BANDWIDTH:-${BANDWIDTH:-$BANDWIDTH_DEFAULT}}"
 TXPOWER="${ENV_TXPOWER:-${TXPOWER:-$TXPOWER_DEFAULT}}"
 REGION="${ENV_REGION:-${REGION:-$REGION_DEFAULT}}"
+
+normalize_bandwidth_mhz() {
+    local raw="$1"
+
+    case "$raw" in
+        HT*|ht*)
+            raw=${raw#HT}
+            raw=${raw#ht}
+            ;;
+    esac
+
+    case "$raw" in
+        *[!0-9]*|'')
+            echo "$BANDWIDTH_MHZ_DEFAULT"
+            ;;
+        *)
+            echo "$raw"
+            ;;
+    esac
+}
+
+BANDWIDTH_MHZ_RAW="${ENV_BANDWIDTH_MHZ:-${BANDWIDTH_MHZ:-${CONFIG_BANDWIDTH_MHZ:-$BANDWIDTH_MHZ_DEFAULT}}}"
+BANDWIDTH_MHZ="$(normalize_bandwidth_mhz "$BANDWIDTH_MHZ_RAW")"
+MONITOR_BANDWIDTH="HT${BANDWIDTH_MHZ}"
 
 usage() {
     echo "Usage:"
@@ -108,7 +136,7 @@ monitor_mode() {
         ip link set "$IFACE" up || { echo "Failed to bring $IFACE up"; continue; }
 
         # Set channel/bandwidth
-        if ! iw dev "$IFACE" set channel "$CHANNEL" "$BANDWIDTH"; then
+        if ! iw dev "$IFACE" set channel "$CHANNEL" "$MONITOR_BANDWIDTH"; then
             echo "Warning: failed to set channel on $IFACE"
         fi
 
@@ -116,7 +144,7 @@ monitor_mode() {
             echo "Warning: failed to set txpower on $IFACE"
         fi
 
-        echo ">>> $IFACE now in monitor mode on channel $CHANNEL $BANDWIDTH"
+        echo ">>> $IFACE now in monitor mode on channel $CHANNEL $MONITOR_BANDWIDTH"
         echo
     done
 }
