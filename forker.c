@@ -1,4 +1,4 @@
-//gcc -O2 -std=c11 -Wall -Wextra -o forker forker.c
+//gcc -O2 -std=c11 -Wall -Wextra -o wfb_supervisor forker.c
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,7 +63,7 @@ static volatile sig_atomic_t g_stop_requested = 0;
 
 static void die(const char *fmt, ...) {
     va_list ap;
-    fprintf(stderr, "forker: ");
+    fprintf(stderr, "wfb_supervisor: ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -320,12 +320,12 @@ static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phas
         char exec_wrapped[MAX_CMD_LEN];
         expand_placeholders(cmds[i], expanded, sizeof(expanded));
         const char *cmd = wrap_exec(expanded, exec_wrapped, sizeof(exec_wrapped));
-        fprintf(stderr, "forker: running %s command: %s\n", phase, cmd);
+        fprintf(stderr, "wfb_supervisor: running %s command: %s\n", phase, cmd);
         pid_t pid = fork();
         if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
         if (pid == 0) {
             execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, cmd, strerror(errno));
+            fprintf(stderr, "wfb_supervisor: exec failed for %s command '%s': %s\n", phase, cmd, strerror(errno));
             _exit(127);
         }
         int status;
@@ -384,17 +384,17 @@ static void shutdown_all(int failed_idx, int failed_status) {
     if (failed_idx >= 0) {
         instance_t *inst = &g_instances[failed_idx];
         if (WIFEXITED(failed_status)) {
-            fprintf(stderr, "forker: instance '%s' (pid %d) exited with status %d, shutting down all\n",
+            fprintf(stderr, "wfb_supervisor: instance '%s' (pid %d) exited with status %d, shutting down all\n",
                     inst->name, inst->pid, WEXITSTATUS(failed_status));
         } else if (WIFSIGNALED(failed_status)) {
-            fprintf(stderr, "forker: instance '%s' (pid %d) terminated by signal %d, shutting down all\n",
+            fprintf(stderr, "wfb_supervisor: instance '%s' (pid %d) terminated by signal %d, shutting down all\n",
                     inst->name, inst->pid, WTERMSIG(failed_status));
         } else {
-            fprintf(stderr, "forker: instance '%s' (pid %d) exited, shutting down all\n",
+            fprintf(stderr, "wfb_supervisor: instance '%s' (pid %d) exited, shutting down all\n",
                     inst->name, inst->pid);
         }
     } else {
-        fprintf(stderr, "forker: shutdown requested, terminating all children\n");
+        fprintf(stderr, "wfb_supervisor: shutdown requested, terminating all children\n");
     }
 
     for (int i = 0; i < g_instance_count; i++) {
@@ -427,7 +427,7 @@ static void shutdown_all(int failed_idx, int failed_status) {
         if (running == 0) break;
 
         if (!escalated && difftime(time(NULL), start) >= 5) {
-            fprintf(stderr, "forker: escalating shutdown with SIGKILL for %d remaining children\n", running);
+            fprintf(stderr, "wfb_supervisor: escalating shutdown with SIGKILL for %d remaining children\n", running);
             for (int i = 0; i < g_instance_count; i++) {
                 if (g_instances[i].running && g_instances[i].pid > 0) {
                     kill(g_instances[i].pid, SIGKILL);
@@ -440,7 +440,7 @@ static void shutdown_all(int failed_idx, int failed_status) {
         sleep(1);
     }
 
-    fprintf(stderr, "forker: summary:\n");
+    fprintf(stderr, "wfb_supervisor: summary:\n");
     for (int i = 0; i < g_instance_count; i++) {
         instance_t *inst = &g_instances[i];
         if (WIFEXITED(inst->exit_status)) {
@@ -467,7 +467,7 @@ static int start_children(void) {
 
         build_command(inst, argv, &argc, exec_path, sizeof(exec_path));
 
-        fprintf(stderr, "forker: starting instance '%s':", inst->name);
+        fprintf(stderr, "wfb_supervisor: starting instance '%s':", inst->name);
         for (int k = 0; k < argc; k++) {
             fprintf(stderr, " %s", argv[k]);
         }
@@ -475,7 +475,7 @@ static int start_children(void) {
 
         pid_t pid = fork();
         if (pid < 0) {
-            fprintf(stderr, "forker: fork failed for instance '%s': %s\n", inst->name, strerror(errno));
+            fprintf(stderr, "wfb_supervisor: fork failed for instance '%s': %s\n", inst->name, strerror(errno));
             return -1;
         } else if (pid == 0) {
             if (!inst->sse_enable && inst->quiet) {
@@ -487,7 +487,7 @@ static int start_children(void) {
                 }
             }
             execvp(exec_path, argv);
-            fprintf(stderr, "forker: execvp failed for '%s': %s\n", exec_path, strerror(errno));
+            fprintf(stderr, "wfb_supervisor: execvp failed for '%s': %s\n", exec_path, strerror(errno));
             _exit(127);
         } else {
             inst->pid = pid;
@@ -499,7 +499,7 @@ static int start_children(void) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = "configs/forker.conf";
+    const char *config_path = "wfb.conf";
     if (argc > 1) config_path = argv[1];
 
     struct sigaction sa;
