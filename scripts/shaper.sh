@@ -47,7 +47,7 @@ if [ -r "$CONFIG_FILE" ]; then
                     MCS|mcs)
                         CONFIG_MCS="$value"
                         ;;
-                    WFB_BW_MHZ|wfb_bw_mhz|BW_MHZ|bw_mhz)
+                    WFB_BW_MHZ|wfb_bw_mhz|BW_MHZ|bw_mhz|BANDWIDTH|bandwidth)
                         CONFIG_BW_MHZ="$value"
                         ;;
                 esac
@@ -57,7 +57,29 @@ if [ -r "$CONFIG_FILE" ]; then
 fi
 
 CMD="${CMD:-${CONFIG_MCS:-$MCS_DEFAULT}}"
-BW_MHZ="${BW_MHZ:-${CONFIG_BW_MHZ:-$BW_DEFAULT}}"
+BW_MHZ_RAW="${BW_MHZ:-${CONFIG_BW_MHZ:-$BW_DEFAULT}}"
+
+normalize_bw_mhz() {
+    local raw="$1"
+
+    case "$raw" in
+        HT*|ht*)
+            raw=${raw#HT}
+            raw=${raw#ht}
+            ;;
+    esac
+
+    case "$raw" in
+        *[!0-9]*|'')
+            echo "$BW_DEFAULT"
+            ;;
+        *)
+            echo "$raw"
+            ;;
+    esac
+}
+
+BW_MHZ="$(normalize_bw_mhz "$BW_MHZ_RAW")"
 
 usage() {
     echo "Usage:"
