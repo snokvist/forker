@@ -39,6 +39,9 @@ typedef struct {
     char cleanup_cmds[MAX_CMDS][MAX_VALUE_LEN];
     int  cleanup_cmd_count;
 
+    int  restart_enabled;
+    int  restart_delay;
+
     char extra_keys[MAX_EXTRA_GENERAL][MAX_KEY_LEN];
     char extra_placeholders[MAX_EXTRA_GENERAL][MAX_KEY_LEN + 2];
     char extra_vals[MAX_EXTRA_GENERAL][MAX_VALUE_LEN];
@@ -113,6 +116,8 @@ static void init_defaults(void) {
     g_cfg.stbc = 0;
     strcpy(g_cfg.key_file, "");
     g_cfg.log_interval = 0;
+    g_cfg.restart_enabled = 0;
+    g_cfg.restart_delay = 3;
 }
 
 static void store_extra_kv(int line_no, const char *key, const char *val) {
@@ -169,6 +174,11 @@ static int parse_parameter_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (strcasecmp(key, "log_interval") == 0) {
         if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
+    } else if (strcasecmp(key, "restart") == 0) {
+        if (parse_bool(val, &g_cfg.restart_enabled)) die("config:%d: invalid restart value '%s'", line_no, val);
+    } else if (strcasecmp(key, "restart_delay") == 0) {
+        if (parse_int(val, &g_cfg.restart_delay)) die("config:%d: invalid restart_delay", line_no);
+        if (g_cfg.restart_delay < 0) die("config:%d: restart_delay must be non-negative", line_no);
     } else if (strcasecmp(key, "init_cmd") == 0 || strcasecmp(key, "cleanup_cmd") == 0) {
         die("config:%d: %s must be placed in [general]", line_no, key);
     } else {
@@ -597,8 +607,9 @@ static int supervise_once(const char *config_path) {
 
 int main(int argc, char **argv) {
     const char *config_path = "/etc/wfb.conf";
-    int restart = 0;
-    int restart_delay = 3;
+    int restart = -1;
+    int restart_delay = -1;
+    int restart_delay_set = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -607,8 +618,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(arg, "--restart-delay") == 0) {
             if (i + 1 >= argc) die("missing value for --restart-delay");
             if (parse_int(argv[++i], &restart_delay)) die("invalid restart delay '%s'", argv[i]);
+            restart_delay_set = 1;
         } else if (strncmp(arg, "--restart-delay=", 17) == 0) {
             if (parse_int(arg + 17, &restart_delay)) die("invalid restart delay '%s'", arg + 17);
+            restart_delay_set = 1;
         } else if (arg[0] == '-') {
             die("unknown option '%s'", arg);
         } else {
@@ -616,7 +629,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (restart_delay < 0) die("restart delay must be non-negative");
+    if (restart_delay_set && restart_delay < 0) die("restart delay must be non-negative");
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -628,10 +641,12 @@ int main(int argc, char **argv) {
 
     do {
         exit_code = supervise_once(config_path);
-        if (!restart) break;
-        fprintf(stderr, "wfb_supervisor: restart requested, sleeping %d seconds before relaunch\n", restart_delay);
-        sleep(restart_delay);
-    } while (restart);
+        int restart_enabled = (restart >= 0) ? restart : g_cfg.restart_enabled;
+        int effective_delay = restart_delay_set ? restart_delay : g_cfg.restart_delay;
+        if (!restart_enabled) break;
+        fprintf(stderr, "wfb_supervisor: restart requested, sleeping %d seconds before relaunch\n", effective_delay);
+        sleep(effective_delay);
+    } while (1);
 
     return exit_code;
 }
