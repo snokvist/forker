@@ -543,8 +543,6 @@ static int start_children(int *failed_idx, int *failed_status) {
 }
 
 static int supervise_once(const char *config_path) {
-    g_stop_requested = 0;
-
     load_config(config_path);
 
     run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
@@ -640,12 +638,17 @@ int main(int argc, char **argv) {
     int exit_code = 0;
 
     do {
+        if (g_stop_requested) break;
+        g_stop_requested = 0;
         exit_code = supervise_once(config_path);
+        if (g_stop_requested) break;
         int restart_enabled = (restart >= 0) ? restart : g_cfg.restart_enabled;
         int effective_delay = restart_delay_set ? restart_delay : g_cfg.restart_delay;
         if (!restart_enabled) break;
         fprintf(stderr, "wfb_supervisor: restart requested, sleeping %d seconds before relaunch\n", effective_delay);
-        sleep(effective_delay);
+        for (int slept = 0; slept < effective_delay && !g_stop_requested; slept++) {
+            sleep(1);
+        }
     } while (1);
 
     return exit_code;
