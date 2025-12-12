@@ -539,14 +539,6 @@ static int start_children(int *failed_idx, int *failed_status) {
             inst->running = 0;
             return -1;
         } else if (pid == 0) {
-            if (inst->quiet) {
-                int nullfd = open("/dev/null", O_RDWR);
-                if (nullfd >= 0) {
-                    dup2(nullfd, STDOUT_FILENO);
-                    dup2(nullfd, STDERR_FILENO);
-                    if (nullfd > 2) close(nullfd);
-                }
-            }
             if (inst->cpu_core >= 0) {
                 cpu_set_t set;
                 CPU_ZERO(&set);
@@ -554,6 +546,14 @@ static int start_children(int *failed_idx, int *failed_status) {
                 if (sched_setaffinity(0, sizeof(set), &set) != 0) {
                     fprintf(stderr, "wfb_supervisor: failed to set CPU %d affinity for '%s': %s\n",
                             inst->cpu_core, inst->name, strerror(errno));
+                }
+            }
+            if (inst->quiet) {
+                int nullfd = open("/dev/null", O_RDWR);
+                if (nullfd >= 0) {
+                    dup2(nullfd, STDOUT_FILENO);
+                    dup2(nullfd, STDERR_FILENO);
+                    if (nullfd > 2) close(nullfd);
                 }
             }
             execvp(exec_path, argv);
